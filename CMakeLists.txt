@@ -6,7 +6,11 @@ find_package(pubsub REQUIRED)
 find_package(pubsub_cpp REQUIRED)
 
 # Build examples
-add_executable(camera "src/camera.cpp")
+if(UNIX)
+add_executable(camera "src/camera.cpp" "src/linux_support.cpp")
+else()
+add_executable(camera "src/camera.cpp" "src/windows_support.cpp")
+endif()
 target_include_directories(camera PUBLIC include/ ${pubsub_INCLUDE_DIRS})
 target_link_libraries(camera ${pubsub_LIBRARIES} ${pubsub_cpp_LIBRARIES})
 set_property(TARGET camera PROPERTY CXX_STANDARD 11)
