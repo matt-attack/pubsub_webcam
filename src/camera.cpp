@@ -26,9 +26,7 @@ int main(int argc, char** argv)
 	parser.AddMulti({ "l" }, "List supported outputs for the given device.");
 	parser.AddMulti({ "width" }, "Desired output width.", "640");
 	parser.AddMulti({ "height" }, "Desired output height.", "480");
-	//parser.AddMulti({ "rgb"}, "Convert output to RGB format.");
-	//parser.AddMulti({ "mjpeg"}, "Use mjpeg format.");
-	parser.AddMulti({ "f", "format" }, "Image format to output.", "YUYV");
+	parser.AddMulti({ "f", "format" }, "Image format to output. YUYV, MJPEG or RGB.", "YUYV");
 
 	//todo add enum parser and have a format argument
 
@@ -37,7 +35,7 @@ int main(int argc, char** argv)
 #ifdef WIN32
 	ICamera* camera = new WindowsCamera();
 #else
-	ICamera* camera = new LinuxCamera;// todo
+	ICamera* camera = new LinuxCamera();
 #endif
 
 	if (camera->Initialize(parser.GetDouble("d")) == false)
@@ -54,10 +52,16 @@ int main(int argc, char** argv)
 
 	int desired_h = parser.GetDouble("height");
 	int desired_w = parser.GetDouble("width");
-	bool mjpeg = true;// parser.GetBool("mjpeg");
-	todo fix format selection
-	// todo allow selecting formats
-	if (!camera->SetFormat(ImageFormat::MJPEG, desired_w, desired_h))
+	std::string desired_format = parser.GetString("f");
+	if (desired_format != "RGB" && desired_format != "MJPEG" && desired_format != "YUYV")
+	{
+		printf("'%s' is not a supported output format.\n", desired_format.c_str());
+		return 1;
+	}
+	bool mjpeg = (desired_format == "MJPEG");
+
+	ImageFormat internal_format = mjpeg ? ImageFormat::MJPEG : ImageFormat::YUYV;
+	if (!camera->SetFormat(internal_format, desired_w, desired_h))
 	{
 		printf("Failed to set image format.\n");
 		return 1;
@@ -71,14 +75,13 @@ int main(int argc, char** argv)
 
 	pubsub::Publisher<pubsub::msg::Image> image_pub(node, "/image");
 
-	bool rgb = false;// parser.GetBool("rgb");
+	bool rgb = (desired_format == "RGB");
 
 	if (!camera->StartCapture())
 	{
 		printf("Failed to start capture\n");
 		return 1;
 	}
-
 
 	while (ps_okay())
 	{
@@ -95,44 +98,17 @@ int main(int argc, char** argv)
 			continue;
 		}
 
-		// image is good to work with
-
-		/*do
-		{
-			FD_ZERO(&fds);
-			FD_SET(fd, &fds);
-
-			// Timeout. 
-			tv.tv_sec = 2;
-			tv.tv_usec = 0;
-
-			r = select(fd + 1, &fds, NULL, NULL, &tv);
-		} while ((r == -1 && (errno = EINTR)));
-		if (r == -1)
-		{
-			perror("select");
-			return errno;
-		}
-
-		CLEAR(buf);
-		buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-		buf.memory = V4L2_MEMORY_MMAP;
-		xioctl(fd, VIDIOC_DQBUF, &buf);*/
-
-		//printf("%i\n", buf.bytesused);
-
-		// V4L2_PIX_FMT_YUYV
 		// in this format, luminance is every even byte, then cr and cb are in alternative odd
 		// to test just grab luminance
 		auto img = pubsub::msg::ImageSharedPtr(new pubsub::msg::Image);
-		img->width = image.width;// fmt.fmt.pix.width;
-		img->height = image.height;// fmt.fmt.pix.height;
+		img->width = image.width;
+		img->height = image.height;
 		if (rgb)
 		{
 			img->type = pubsub::msg::Image::R8G8B8;
 			img->data_length = img->width * img->height * 3;
 			img->data = (uint8_t*)malloc(img->data_length);
-			uint8_t* data = image.data;// (uint8_t*)buffers[buf.index].start;
+			uint8_t* data = image.data;
 			// todo fill out pixel 0
 			int len = img->height * img->width;
 			for (int i = 1; i < len; i++)
@@ -157,9 +133,9 @@ int main(int argc, char** argv)
 		else if (mjpeg)
 		{
 			img->type = pubsub::msg::Image::JPEG;
-			img->data_length = image.data_length;// buf.bytesused;
+			img->data_length = image.data_length;
 			img->data = (uint8_t*)malloc(img->data_length);
-			uint8_t* data = image.data;// (uint8_t*)buffers[buf.index].start;
+			uint8_t* data = image.data;
 			memcpy(img->data, data, img->data_length);
 		}
 		else
@@ -167,7 +143,7 @@ int main(int argc, char** argv)
 			img->type = pubsub::msg::Image::YUYV;
 			img->data_length = img->width * img->height * 2;
 			img->data = (uint8_t*)malloc(img->data_length);
-			uint8_t* data = image.data;// (uint8_t*)buffers[buf.index].start;
+			uint8_t* data = image.data;
 			memcpy(img->data, data, img->data_length);
 		}
 		image_pub.publish(img);
@@ -175,17 +151,7 @@ int main(int argc, char** argv)
 
 
 		camera->ReleaseImage(image);
-
-		//xioctl(fd, VIDIOC_QBUF, &buf);
 	}
-
-	/*type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	xioctl(fd, VIDIOC_STREAMOFF, &type);
-	for (i = 0; i < n_buffers; ++i)
-	{
-		v4l2_munmap(buffers[i].start, buffers[i].length);
-	}
-	v4l2_close(fd);*/
 
 	return 0;
 }

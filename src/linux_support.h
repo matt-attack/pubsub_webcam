@@ -62,14 +62,11 @@ static void xioctl(int fh, int request, void* arg)
 
 class LinuxCamera : public ICamera
 {
-	//int n_buffers;
-
-	struct v4l2_format              fmt;
-	struct v4l2_buffer              buf;
-	fd_set                          fds;
-	struct timeval                  tv;
-	int                             r = -1;
-	unsigned int                    i, n_buffers;
+	int current_width_, current_height_;
+	struct v4l2_buffer current_buf_;
+	struct buffer* buffers_;
+	unsigned int n_buffers_;
+	int fd_;
 
 public:
 
@@ -81,12 +78,12 @@ public:
 	~LinuxCamera()
 	{
 		v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-		xioctl(fd, VIDIOC_STREAMOFF, &type);
-		for (i = 0; i < n_buffers; ++i)
+		xioctl(fd_, VIDIOC_STREAMOFF, &type);
+		for (int i = 0; i < n_buffers_; ++i)
 		{
-			v4l2_munmap(buffers[i].start, buffers[i].length);
+			v4l2_munmap(buffers_[i].start, buffers_[i].length);
 		}
-		v4l2_close(fd);
+		v4l2_close(fd_);
 	}
 
 	// returns false if device doesnt exist
@@ -99,6 +96,7 @@ public:
 			perror("Cannot open device");
 			return false;
 		}
+		fd_ = fd;
 		return true;
 	}
 
@@ -106,24 +104,28 @@ public:
 	virtual bool SetFormat(ImageFormat format, int desired_width, int desired_height)
 	{
 		int desired_pixel_format = format == ImageFormat::MJPEG ? V4L2_PIX_FMT_MJPEG : V4L2_PIX_FMT_YUYV;
-
+		
+		struct v4l2_format fmt;
 		CLEAR(fmt);
 		fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-		fmt.fmt.pix.width = desired_height;
-		fmt.fmt.pix.height = desired_width;
+		fmt.fmt.pix.width = desired_width;
+		fmt.fmt.pix.height = desired_height;
 		fmt.fmt.pix.pixelformat = desired_pixel_format;
 		fmt.fmt.pix.field = V4L2_FIELD_NONE;
-		xioctl(fd, VIDIOC_S_FMT, &fmt);
+		xioctl(fd_, VIDIOC_S_FMT, &fmt);
 		if (fmt.fmt.pix.pixelformat != desired_pixel_format)
 		{
 			printf("Libv4l didn't accept desired pixel format format. Can't proceed.\n");
-			exit(EXIT_FAILURE);
+			return false;
 		}
 		if ((fmt.fmt.pix.width != desired_width) || (fmt.fmt.pix.height != desired_height))
 		{
 			printf("Warning: driver is sending image at %dx%d\n",
 				fmt.fmt.pix.width, fmt.fmt.pix.height);
 		}
+		current_width_ = fmt.fmt.pix.width;
+		current_height_ = fmt.fmt.pix.height;
+		return true;
 	}
 
 	// prepare to capture images
@@ -134,57 +136,65 @@ public:
 		req.count = 2;
 		req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		req.memory = V4L2_MEMORY_MMAP;
-		xioctl(fd, VIDIOC_REQBUFS, &req);
+		xioctl(fd_, VIDIOC_REQBUFS, &req);
 
-		struct buffer* buffers = (buffer*)calloc(req.count, sizeof(*buffers));
-		for (n_buffers = 0; n_buffers < req.count; ++n_buffers)
+		buffers_ = (buffer*)calloc(req.count, sizeof(*buffers_));
+		for (n_buffers_ = 0; n_buffers_ < req.count; ++n_buffers_)
 		{
+			struct v4l2_buffer buf;
 			CLEAR(buf);
 
 			buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 			buf.memory = V4L2_MEMORY_MMAP;
-			buf.index = n_buffers;
+			buf.index = n_buffers_;
 
-			xioctl(fd, VIDIOC_QUERYBUF, &buf);
+			xioctl(fd_, VIDIOC_QUERYBUF, &buf);
 
-			buffers[n_buffers].length = buf.length;
-			buffers[n_buffers].start = v4l2_mmap(NULL, buf.length,
+			buffers_[n_buffers_].length = buf.length;
+			buffers_[n_buffers_].start = v4l2_mmap(NULL, buf.length,
 				PROT_READ | PROT_WRITE, MAP_SHARED,
-				fd, buf.m.offset);
+				fd_, buf.m.offset);
 
-			if (MAP_FAILED == buffers[n_buffers].start)
+			if (MAP_FAILED == buffers_[n_buffers_].start)
 			{
 				perror("mmap");
-				exit(EXIT_FAILURE);
+				free(buffers_);
+				// todo should probably free bufs
+				return false;
 			}
 		}
 
-		for (i = 0; i < n_buffers; ++i)
+		for (int i = 0; i < n_buffers_; ++i)
 		{
+			struct v4l2_buffer buf;
 			CLEAR(buf);
 			buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 			buf.memory = V4L2_MEMORY_MMAP;
 			buf.index = i;
-			xioctl(fd, VIDIOC_QBUF, &buf);
+			xioctl(fd_, VIDIOC_QBUF, &buf);
 		}
 		v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-		xioctl(fd, VIDIOC_STREAMON, &type);
+		xioctl(fd_, VIDIOC_STREAMON, &type);
+		return true;
 	}
 
 	// note the image must be released before another can be grabbed, at most one can be out at a time
 	virtual Image GrabImage(bool& failed)
 	{
 		failed = false;
+		int r = -1;
 		do
 		{
+			fd_set fds;
 			FD_ZERO(&fds);
-			FD_SET(fd, &fds);
+			FD_SET(fd_, &fds);
 
 			// Timeout.
+			struct timeval tv;
 			tv.tv_sec = 2;
 			tv.tv_usec = 0;
 
-			r = select(fd + 1, &fds, NULL, NULL, &tv);
+			r = select(fd_ + 1, &fds, NULL, NULL, &tv);
 		} while ((r == -1 && (errno = EINTR)));
 		if (r == -1)
 		{
@@ -196,22 +206,22 @@ public:
 			return img;
 		}
 
-		CLEAR(buf);
-		buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-		buf.memory = V4L2_MEMORY_MMAP;
-		xioctl(fd, VIDIOC_DQBUF, &buf);
+		CLEAR(current_buf_);
+		current_buf_.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+		current_buf_.memory = V4L2_MEMORY_MMAP;
+		xioctl(fd_, VIDIOC_DQBUF, &current_buf_);
 
 		Image img;
-		img.data = buffers[buf.index].start;
-		img.data_length = buf.bytesused;
-		img.height = ;
-		img.width = ;
+		img.data = (uint8_t*)buffers_[current_buf_.index].start;
+		img.data_length = current_buf_.bytesused;
+		img.height = current_height_;
+		img.width = current_width_;
 		return img;
 	}
 
 	virtual void ReleaseImage(Image img)
 	{
-		xioctl(fd, VIDIOC_QBUF, &buf);
+		xioctl(fd_, VIDIOC_QBUF, &current_buf_);
 	}
 
 	// list supported image formats, used if we fail to find one or the user just wants to list them
@@ -221,14 +231,14 @@ public:
 		struct v4l2_fmtdesc fmtdesc;
 		memset(&fmtdesc, 0, sizeof(fmtdesc));
 		fmtdesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-		while (ioctl(fd, VIDIOC_ENUM_FMT, &fmtdesc) == 0)
+		while (ioctl(fd_, VIDIOC_ENUM_FMT, &fmtdesc) == 0)
 		{
 			printf("%s\n", fmtdesc.description);
 
 			struct v4l2_frmsizeenum fmtdesc2;
 			memset(&fmtdesc2, 0, sizeof(fmtdesc2));
-			fmtdesc2.pixel_format = V4L2_PIX_FMT_YUYV;
-			while (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &fmtdesc2) == 0)
+			fmtdesc2.pixel_format = fmtdesc.pixelformat;
+			while (ioctl(fd_, VIDIOC_ENUM_FRAMESIZES, &fmtdesc2) == 0)
 			{
 				if (fmtdesc2.type == V4L2_FRMSIZE_TYPE_DISCRETE)
 				{

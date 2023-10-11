@@ -7,7 +7,7 @@ find_package(pubsub_cpp REQUIRED)
 
 # Build examples
 if(UNIX)
-add_executable(camera "src/camera.cpp" "src/linux_support.cpp")
+add_executable(camera "src/camera.cpp")
 else()
 add_executable(camera "src/camera.cpp" "src/windows_support.cpp")
 endif()
